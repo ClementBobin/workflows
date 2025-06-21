@@ -1,0 +1,38 @@
+name: Deploy to Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 3: Deploy to Server
+      - name: 🌈 Deploy with SSH
+        uses: appleboy/ssh-action@v0.1.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          script: |
+            echo "Starting deployment..."
+
+            # Check if the Git repository already exists, if not, clone it
+            if [ ! -d ".git" ]; then
+              echo "Git repository not found. Cloning repository..."
+              git clone https://github.com/
+            else
+              echo "Git repository found. Pulling the latest changes..."
+              cd Docker
+              git pull origin main
+            fi
+            
+            echo "Deployment completed successfully."
