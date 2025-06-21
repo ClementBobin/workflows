@@ -28,7 +28,7 @@ jobs:
             # Check if the Git repository already exists, if not, clone it
             if [ ! -d ".git" ]; then
               echo "Git repository not found. Cloning repository..."
-              git clone https://github.com/
+              git clone ${{ secrets.REPO_URL }}
             else
               echo "Git repository found. Pulling the latest changes..."
               cd Docker
