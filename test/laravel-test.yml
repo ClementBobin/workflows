@@ -1,0 +1,48 @@
+name: Test Coverage (Laravel)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-test-coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+
+    - name: Install dependencies
+      run: composer install
+
+    - name: Setup Laravel environment
+      run: cp .env.example .env && php artisan key:generate
+
+    - name: Run PHPUnit tests with coverage
+      run: |
+        vendor/bin/phpunit --coverage-clover=coverage.xml
+
+    - name: Upload PHP Coverage
+      uses: actions/upload-artifact@v3
+      with:
+        name: phpunit-coverage
+        path: coverage.xml
+
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: coverage.xml
+
+    - name: SonarCloud Scan
+      uses: SonarSource/sonarcloud-github-action@v2
+      with:
+        projectBaseDir: .
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
