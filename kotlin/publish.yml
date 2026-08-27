@@ -1,0 +1,105 @@
+name: Publish library and versioned docs to Maven Central and GitHub Pages
+
+on:
+  release:
+    types: [released, prereleased]
+
+# Centralized configuration variables for the entire workflow
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'zulu'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Release build and publish
+    runs-on: macOS-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Publish to MavenCentral
+        run: ./gradlew publishToMavenCentral --no-configuration-cache
+        env:
+          RELEASE_VERSION: ${{ github.event.release.tag_name }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_KEY_CONTENTS }}
+
+  docs-build:
+    name: Build versioned docs
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore docs history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-docs-history
+          key: docs-history-${{ github.sha }}
+          restore-keys: docs-history-
+
+      - name: Generate Dokka docs
+        run: ./gradlew dokkaGenerate --no-daemon
+        env:
+          RELEASE_VERSION: ${{ github.event.release.tag_name }}
+
+      - name: Archive current version into history
+        run: |
+          VERSION=${{ github.event.release.tag_name }}
+          VERSION=${VERSION#v}
+          mkdir -p .ci-docs-history/"$VERSION"
+          cp -r build/docs/html/. .ci-docs-history/"$VERSION"/
+
+      - name: Save docs history cache
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-docs-history
+          key: docs-history-${{ github.sha }}
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/html
+
+  docs-deploy:
+    name: Deploy versioned docs
+    needs: docs-build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

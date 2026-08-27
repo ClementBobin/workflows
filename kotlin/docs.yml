@@ -1,0 +1,75 @@
+name: Docs (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: 21
+          distribution: zulu
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Restore previous doc versions so the versioning plugin can build the dropdown.
+      # On the very first run this step is a no-op (the cache key won't exist yet).
+      - name: Restore docs history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-docs-history
+          key: docs-history-${{ github.sha }}
+          restore-keys: docs-history-
+
+      - name: Generate Dokka docs
+        run: ./gradlew dokkaGenerate --no-daemon
+
+      # Archive the freshly generated output under its version folder
+      # so the next run can reference it as an older version.
+      - name: Archive current version into history
+        run: |
+          mkdir -p .ci-docs-history/SNAPSHOT
+          cp -r build/docs/html/. .ci-docs-history/SNAPSHOT/
+
+      - name: Save docs history cache
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-docs-history
+          key: docs-history-${{ github.sha }}
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

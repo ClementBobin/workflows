@@ -1,0 +1,261 @@
+name: 🚀 Build and Release Compose Multiplatform
+
+on:
+  push:
+    branches: [ main ]
+
+# Centralized configuration variables for the entire workflow
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1 — Resolve the next semantic version
+  # ─────────────────────────────────────────────
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version:      ${{ steps.semver.outputs.version }}
+      version_code: ${{ steps.semver.outputs.version_code }}
+      will_release: ${{ steps.semver.outputs.will_release }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "lts/*"
+
+    - name: Install semantic-release
+      run: |
+        npm install --save-dev semantic-release \
+          @semantic-release/changelog \
+          @semantic-release/git \
+          @semantic-release/github \
+          conventional-changelog-conventionalcommits
+
+    - name: Determine next version (dry-run)
+      id: semver
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set +e
+        OUTPUT=$(npx semantic-release --dry-run --no-ci 2>&1)
+        SR_EXIT=$?
+        set -e
+
+        VERSION=$(echo "$OUTPUT" | grep -oP 'The next release version is \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+
+        if [ $SR_EXIT -ge 2 ]; then
+          echo "❌ semantic-release failed with exit code $SR_EXIT"
+          exit $SR_EXIT
+        fi
+
+        if [ -z "$VERSION" ]; then
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "1.0.0")
+          echo "will_release=false" >> $GITHUB_OUTPUT
+        else
+          echo "will_release=true" >> $GITHUB_OUTPUT
+        fi
+
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f2)
+        PATCH=$(echo "$VERSION" | cut -d. -f3)
+        VERSION_CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+
+        echo "version=$VERSION"       >> $GITHUB_OUTPUT
+        echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+        echo "✅ Version: $VERSION  (code: $VERSION_CODE)"
+
+  # ─────────────────────────────────────────────
+  # Job 2 — Build Android (APK & AAB)
+  # ─────────────────────────────────────────────
+  build-android:
+    runs-on: ubuntu-latest
+    needs: resolve-version
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+        cache: gradle
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+    - name: Write local.properties
+      run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+    - name: Decode Keystore & Build Android
+      env:
+        VERSION: ${{ needs.resolve-version.outputs.version }}
+        VERSION_CODE: ${{ needs.resolve-version.outputs.version_code }}
+      run: |
+        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > $RUNNER_TEMP/release.keystore
+        ./gradlew :composeApp:assembleRelease :composeApp:bundleRelease \
+          -PversionName="$VERSION" \
+          -PversionCode="$VERSION_CODE" \
+          -Pandroid.injected.signing.store.file=$RUNNER_TEMP/release.keystore \
+          -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
+          -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} \
+          -Pandroid.injected.signing.key.password=${{ secrets.KEYSTORE_PASSWORD }}
+    - name: Upload Android Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-artifacts
+        path: |
+          */*/build/outputs/apk/release/*.apk
+          */*/build/outputs/bundle/release/*.aab
+
+  # ─────────────────────────────────────────────
+  # Job 3 — Build iOS (Requires macOS)
+  # ─────────────────────────────────────────────
+  build-ios:
+    runs-on: macos-latest
+    needs: resolve-version
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+        cache: gradle
+    - name: Build iOS App / IPA
+      env:
+        VERSION: ${{ needs.resolve-version.outputs.version }}
+      run: |
+        echo "Building iOS v$VERSION"
+        ./gradlew :composeApp:linkReleaseFrameworkIosArm64 || true
+    - name: Upload iOS Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ios-artifacts
+        path: |
+          iosApp/build/Knu*.ipa
+          **/build/outputs/ios/*.ipa
+
+  # ─────────────────────────────────────────────
+  # Job 4 — Build Web (Wasm / JS)
+  # ─────────────────────────────────────────────
+  build-web:
+    runs-on: ubuntu-latest
+    needs: resolve-version
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+        cache: gradle
+    - name: Build Compose Web Target
+      run: |
+        ./gradlew :composeApp:wasmJsBrowserDistribution
+    - name: Upload Web Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: web-artifacts
+        path: composeApp/build/dist/wasmJs/productionExecutable/
+
+  # ─────────────────────────────────────────────
+  # Job 5 — Build Desktop Matrix (Linux, macOS, Windows)
+  # ─────────────────────────────────────────────
+  build-desktop:
+    runs-on: ${{ matrix.os }}
+    needs: resolve-version
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            task: packageDmg
+          - os: macos-latest
+            platform: macos
+            task: packageDmg
+          - os: windows-latest
+            platform: windows
+            task: packageMsi
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+        cache: gradle
+    - name: Build Desktop Distribution (${{ matrix.platform }})
+      env:
+        VERSION: ${{ needs.resolve-version.outputs.version }}
+      run: |
+        ./gradlew :composeApp:${{ matrix.task }} -PversionName="$VERSION"
+    - name: Upload Desktop Artifacts (${{ matrix.platform }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: desktop-${{ matrix.platform }}-artifacts
+        path: |
+          composeApp/build/compose/binaries/main/dmg/*.dmg
+          composeApp/build/compose/binaries/main/msi/*.msi
+          composeApp/build/compose/binaries/main/deb/*.deb
+          composeApp/build/compose/binaries/main/rpm/*.rpm
+          composeApp/build/compose/binaries/main/exe/*.exe
+          composeApp/build/compose/binaries/main/zip/*.zip
+
+  # ─────────────────────────────────────────────
+  # Job 6 — Centralized Release & Publishing
+  # ─────────────────────────────────────────────
+  release:
+    runs-on: ubuntu-latest
+    needs: [resolve-version, build-android, build-ios, build-web, build-desktop]
+    if: needs.resolve-version.outputs.will_release == 'true'
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download All Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: collected-artifacts
+
+    - name: Flatten Artifact Directory for Release
+      run: |
+        mkdir -p final-release-assets
+        find collected-artifacts -type f \( -name "*.apk" -o -name "*.aab" -o -name "*.ipa" -o -name "*.dmg" -o -name "*.msi" -o -name "*.deb" -o -name "*.exe" -o -name "*.zip" \) -exec cp {} final-release-assets/ \;
+        if [ -d "collected-artifacts/web-artifacts" ]; then
+          cd collected-artifacts/web-artifacts && zip -r ../../../final-release-assets/web-distribution.zip . && cd -
+        fi
+        ls -la final-release-assets
+
+    - name: Setup Node.js & semantic-release
+      uses: actions/setup-node@v4
+      with:
+        node-version: "lts/*"
+
+    - name: Install semantic-release plugins
+      run: |
+        npm install --save-dev semantic-release \
+          @semantic-release/changelog \
+          @semantic-release/git \
+          @semantic-release/github
+
+    - name: Run semantic-release (Publish to GitHub Releases)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: npx semantic-release
+
+    - name: Publish AAB to Google Play (Internal Track)
+      uses: r0adkll/upload-google-play@v1
+      with:
+        serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        packageName: com.mirage.bob1
+        releaseFiles: collected-artifacts/android-artifacts/*.aab
+        track: internal
+        status: completed
