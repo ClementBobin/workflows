@@ -1,0 +1,47 @@
+name: Test Coverage (NODE.JS)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-test-coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '16'
+
+    - name: Install dependencies
+      run: |
+        npm install
+
+    - name: Run tests with coverage
+      run: |
+        npm run test:coverage
+
+    - name: Upload Jest Coverage
+      uses: actions/upload-artifact@v3
+      with:
+        name: jest-coverage
+        path: coverage/
+
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: coverage/lcov.info
+        fail_ci_if_error: true
+
+    - name: SonarCloud Scan
+      uses: SonarSource/sonarcloud-github-action@v2
+      with:
+        projectBaseDir: .
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

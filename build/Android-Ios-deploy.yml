@@ -1,0 +1,157 @@
+name: 🏷️ Semantic Release & 📱 Mobile Build (Android + iOS)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: 🚀 Semantic Release & Android Build
+    runs-on: ubuntu-latest
+
+    steps:
+      # 🧩 Checkout the repository
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ⚙️ Setup Node.js for semantic-release
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      # 🧰 Install release tools
+      - name: Install release tools
+        run: |
+          npm install -g semantic-release \
+            @semantic-release/changelog \
+            @semantic-release/git \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator \
+            @semantic-release/github
+
+      # 🏷️ Get next version (dry-run)
+      - name: Get next release version
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(npx semantic-release --dry-run | grep "The next release version is" | awk '{print $NF}')
+          echo "version=${VERSION:-0.0.0}" >> $GITHUB_OUTPUT
+
+      # 🧱 Setup Java (for Android)
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # 🧩 Setup Gradle
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      # 🏗️ Build APK (Release)
+      - name: Build APK
+        run: ./gradlew assembleRelease
+
+      # 🔏 Sign APK
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      # 🧩 Rename APK
+      - name: Rename APK with version
+        run: |
+          VERSION=${{ steps.semantic.outputs.version }}
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release-signed.apk dist/app-release-v${VERSION}.apk
+          echo "APK_NAME=app-release-v${VERSION}.apk" >> $GITHUB_ENV
+
+      # 🏷️ Run semantic-release to publish release + attach APK
+      - name: Run semantic-release (publish)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release --assets "dist/${APK_NAME}"
+
+  ios:
+    name: 🍎 iOS Build & Release
+    runs-on: macos-latest
+    needs: release
+
+    steps:
+      # 🧩 Checkout repo
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ⚙️ Setup Node.js (for semantic-release)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      # 🍏 Setup Ruby & CocoaPods
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+
+      - name: Install CocoaPods
+        run: pod install --project-directory=ios
+
+      # 🔑 Setup Xcode environment
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      # 🔏 Setup Signing Certificates & Provisioning Profile
+      - name: Setup signing
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.IOS_CERTIFICATES_P12 }}
+          p12-password: ${{ secrets.IOS_CERTIFICATES_PASSWORD }}
+          provisioning-profile-base64: ${{ secrets.IOS_PROVISION_PROFILE }}
+
+      # 🏗️ Build iOS app (Release)
+      - name: Build iOS app
+        run: |
+          xcodebuild -workspace ios/YourApp.xcworkspace \
+            -scheme YourApp \
+            -configuration Release \
+            -archivePath build/YourApp.xcarchive \
+            archive DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }} \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.IOS_PROFILE_NAME }}"
+
+          xcodebuild -exportArchive \
+            -archivePath build/YourApp.xcarchive \
+            -exportPath dist \
+            -exportOptionsPlist ios/exportOptions.plist
+
+      # 🧩 Rename IPA
+      - name: Rename IPA with version
+        run: |
+          VERSION=${{ needs.release.outputs.version }}
+          mv dist/YourApp.ipa dist/YourApp-v${VERSION}.ipa
+          echo "IPA_NAME=YourApp-v${VERSION}.ipa" >> $GITHUB_ENV
+
+      # 📦 Upload IPA to release
+      - name: Upload IPA to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload v${{ needs.release.outputs.version }} "dist/${IPA_NAME}" --clobber

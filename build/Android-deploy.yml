@@ -1,0 +1,89 @@
+name: 🏷️ Semantic Release & 📱 Android Build
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: 🚀 Semantic Release & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      # 🧩 Checkout the repository
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ⚙️ Setup Node.js for release management
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      # 🧰 Install semantic-release and plugins
+      - name: Install release tools
+        run: |
+          npm install -g semantic-release \
+            @semantic-release/changelog \
+            @semantic-release/git \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator \
+            @semantic-release/github
+
+      # 🏷️ Run semantic-release to manage versions
+      - name: Run semantic-release (dry-run to get next version)
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(npx semantic-release --dry-run | grep "The next release version is" | awk '{print $NF}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT || echo "version=0.0.0" >> $GITHUB_OUTPUT
+
+      # 🧱 Setup Java (required for Android build)
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # 🧩 Setup Gradle
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      # 🏗️ Build the APK (Release)
+      - name: Build APK
+        run: ./gradlew assembleRelease
+
+      # 🔏 Sign the generated APK
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      # 🧩 Rename APK with version for clarity
+      - name: Rename APK with version
+        run: |
+          VERSION=${{ steps.semantic.outputs.version }}
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release-signed.apk dist/app-release-v${VERSION}.apk
+          echo "APK_NAME=app-release-v${VERSION}.apk" >> $GITHUB_ENV
+
+      # 🏷️ Run semantic-release to publish release and attach APK
+      - name: Run semantic-release and upload APK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release --assets "dist/${APK_NAME}"

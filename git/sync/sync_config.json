@@ -1,0 +1,24 @@
+{
+    "log_level": "debug",
+    "ado": {
+        "organization": "",
+        "project": "",
+        "wit": "User Story",
+        "states": {
+            "new": "New",
+            "closed": "Closed",
+            "reopened": "New",
+            "deleted": "Removed",
+            "active": "Active"
+        },
+        "bypassRules": true,
+        "autoCreate": true,
+        "assignedTo": "@organization.com",
+        "areaPath": "\\Accessibility",
+        "iterationPath": "\\Sprint 1",
+        "mappings": {
+              "handles": {
+                
+              }
+        }
+}
