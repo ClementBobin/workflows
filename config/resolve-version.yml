@@ -1,0 +1,70 @@
+name: Resolve Version
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version:      ${{ steps.semver.outputs.version }}
+      version_code: ${{ steps.semver.outputs.version_code }}
+      will_release: ${{ steps.semver.outputs.will_release }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "lts/*"
+
+    - name: Install semantic-release
+      run: |
+        npm install --save-dev semantic-release \
+          @semantic-release/changelog \
+          @semantic-release/git \
+          @semantic-release/github \
+          conventional-changelog-conventionalcommits
+
+    - name: Determine next version (dry-run)
+      id: semver
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set +e
+        OUTPUT=$(npx semantic-release --dry-run --no-ci 2>&1)
+        SR_EXIT=$?
+        set -e
+
+        VERSION=$(echo "$OUTPUT" | grep -oP 'The next release version is \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+
+        if [ $SR_EXIT -ge 2 ]; then
+          echo "❌ semantic-release failed with exit code $SR_EXIT"
+          exit $SR_EXIT
+        fi
+
+        if [ -z "$VERSION" ]; then
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "1.0.0")
+          echo "will_release=false" >> $GITHUB_OUTPUT
+        else
+          echo "will_release=true" >> $GITHUB_OUTPUT
+        fi
+
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f2)
+        PATCH=$(echo "$VERSION" | cut -d. -f3)
+        VERSION_CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+
+        echo "version=$VERSION"       >> $GITHUB_OUTPUT
+        echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+        echo "✅ Version: $VERSION  (code: $VERSION_CODE)"
